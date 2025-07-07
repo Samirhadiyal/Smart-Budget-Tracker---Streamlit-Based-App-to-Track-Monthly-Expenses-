@@ -1,1 +1,803 @@
+import streamlit as st
+import pandas as pd #(Reading, writing, and processing tabular data (like CSV files)
+import os
+from datetime import date, datetime, timedelta #(used to subtract/add days)
+import matplotlib.pyplot as plt
+import hashlib
+from io import BytesIO #(Handling binary data like in memory, downloadable PNG charts without saving them as files.)
+import calendar
+import re #(like validating a mobile number or password format)
+import plotly.express as px #(beautiful and interactive charts quickly.)
+import plotly.graph_objects as go #(detailed and customizable charts than px)
+from plotly.subplots import make_subplots # (multiple plots, 2 graphs side-by-side)
 
+# Sets up the look
+st.set_page_config(
+    page_title="Personal Expense Tracker",
+    page_icon="💸",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# pass encrypt
+def hash_password(password):
+    """Hash password using SHA256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def check_password(password, hashed):
+    """compare pass with hash"""
+    return hash_password(password) == hashed
+
+def validate_password(password):
+    """Cheak pass format for strength"""
+    if len(password) < 6:
+        return False, "Password must be at least 6 characters long"
+    if not re.search(r"[A-Za-z]", password):
+        return False, "Password must contain at least one letter"
+    if not re.search(r"\d", password):
+        return False, "Password must contain at least one number"
+    return True, "Password is valid"
+
+def validate_mobile(mobile):
+    """Validate mobile number format"""
+    mobile_str = str(mobile).strip()
+    if re.match(r'^[6-9]\d{9}$', mobile_str):
+        return True, "Valid mobile number"
+    return False, "Mobile number must be 10 digits starting with 6-9"
+
+def init_user_file():
+    """Initialize users.csv if it doesn't exist"""
+    try:
+        if not os.path.exists("users.csv"): # Creates a file user.csv if not exists
+            df_users = pd.DataFrame(columns=["Username", "PasswordHash", "Name", "Mobile", "CreatedDate"]) #  column names to hold user data.
+            df_users.to_csv("users.csv", index=False)
+        return True
+    except Exception as e:
+        st.error(f"Error initializing user file: {str(e)}")
+        return False
+
+def get_expense_file(username):
+    """Creates a unique filename for user"""
+    return f"expenses_{username}.csv" 
+
+def fig_to_bytes(fig):
+    """Convert matplotlib figure to bytes"""
+    buf = BytesIO() # Converts matplotlib chart to bytes
+    fig.savefig(buf, format="png", dpi=300, bbox_inches='tight') # save as PNG
+    buf.seek(0)
+    return buf
+
+def safe_mobile_display(mobile_value):
+    """Safely display mobile number with masking"""
+    try:
+        if pd.isna(mobile_value) or str(mobile_value).lower() == "nan":
+            return "📱 Mobile: N/A"
+        mobile_str = str(int(float(mobile_value))).strip()
+        if len(mobile_str) >= 4:
+            return f"📱 Mobile: ****{mobile_str[-4:]}" # makes mob no. look like ****
+        else:
+            return "📱 Mobile: Invalid Format"
+    except:
+        return "📱 Mobile: N/A"
+
+def load_user_data():
+    """Load user data with error handling"""
+    try:
+        if os.path.exists("users.csv"):
+            return pd.read_csv("users.csv") # load user data user.csv
+        else:
+            return pd.DataFrame(columns=["Username", "PasswordHash", "Name", "Mobile", "CreatedDate"])
+    except Exception as e:
+        st.error(f"Error loading user data: {str(e)}") # if error then return empty tabel
+        return pd.DataFrame(columns=["Username", "PasswordHash", "Name", "Mobile", "CreatedDate"]) 
+
+def load_expense_data(username):
+    """Loads the individual user expenses from personal csv file"""
+    try:
+        csv_file = get_expense_file(username) # to generate the filename
+        if os.path.exists(csv_file): # is file exist on disk?
+            df = pd.read_csv(csv_file)
+            df["Date"] = pd.to_datetime(df["Date"], format='%Y-%m-%d', errors='coerce')
+            return df
+        else: # return an empty table with all expected column
+            return pd.DataFrame(columns=[
+                "Name", "Date", "Salary", "EMI", "Food", "Bills", 
+                "Shopping", "Transportation", "Healthcare", "Entertainment", 
+                "Education", "Savings", "Mobile", "Category", "Notes"
+            ])
+    except Exception as e:
+        st.error(f"Error loading expense data: {str(e)}")
+        return pd.DataFrame()
+
+@st.cache_data
+def get_expense_categories():
+    """Returns dictionary predefined expense categories"""
+    return {
+        "EMI": "🏦",
+        "Food": "🍲", 
+        "Bills": "💡",
+        "Shopping": "🛍",
+        "Transportation": "🚗",
+        "Healthcare": "🏥",
+        "Entertainment": "🎬",
+        "Education": "📚"
+    }
+
+def get_user_categories(username):
+    """Get user's custom categories"""
+    try:
+        categories_file = f"categories_{username}.csv"
+        if os.path.exists(categories_file): # Checks if the file categories_<username>.csv exists
+            df_categories = pd.read_csv(categories_file) # if it does: reads and converts it into a dict
+            return dict(zip(df_categories['Category'], df_categories['Icon']))
+        else:
+            return {}
+    except:
+        return {}
+
+def save_user_categories(username, categories):
+    """Save user's custom categories"""
+    try:
+        categories_file = f"categories_{username}.csv"
+        df_categories = pd.DataFrame([ #Converts custom categories into dataframe and saves it as CSV
+            {"Category": cat, "Icon": icon} for cat, icon in categories.items()
+        ])
+        df_categories.to_csv(categories_file, index=False)
+        return True
+    except:
+        return False
+
+def get_all_categories(username):
+    """Get all categories (predefined + custom)"""
+    predefined = get_expense_categories()
+    custom = get_user_categories(username)
+    return {**predefined, **custom}
+
+def create_expense_summary(df, period="month"):
+    """Create expense summary for given period"""
+    if df.empty: # handle empty dataframe
+        return None
+    
+    today = date.today()
+    
+    # filter data based on selected period
+    if period == "month":
+        df_filtered = df[(df["Date"].dt.month == today.month) & 
+                        (df["Date"].dt.year == today.year)]
+        title = f"{today:%B %Y}"
+    elif period == "year":
+        df_filtered = df[df["Date"].dt.year == today.year]
+        title = f"{today.year}"
+    else:
+        df_filtered = df
+        title = "All Time"
+    
+    if df_filtered.empty:
+        return None
+    
+    expense_cols = ["EMI", "Food", "Bills", "Shopping", "Transportation", 
+                   "Healthcare", "Entertainment", "Education"] # define predefine columns to list
+    
+    # add custom categories to expense list
+    custom_cols = [col for col in df_filtered.columns if col not in expense_cols + 
+                   ["Name", "Date", "Salary", "Savings", "Mobile", "Category", "Notes"]]
+    expense_cols.extend(custom_cols)
+    
+    available_cols = [col for col in expense_cols if col in df_filtered.columns]
+    
+    summary = {     # build a summary dict
+        "period": title,
+        "total_income": df_filtered["Salary"].sum(),
+        "total_expenses": df_filtered[available_cols].sum().sum(),
+        "total_savings": df_filtered["Savings"].sum(),
+        "expense_breakdown": df_filtered[available_cols].sum().to_dict(),
+        "avg_monthly_expense": df_filtered[available_cols].sum().sum() / max(len(df_filtered), 1)
+    }
+    
+    return summary
+
+# initialize
+if not init_user_file(): # checks that users.csv exists before continuing
+    st.stop()
+
+# session state 
+# keeps track of data across app interactions
+if "logged_in" not in st.session_state: 
+    st.session_state.logged_in = False
+if "username" not in st.session_state:
+    st.session_state.username = ""
+if "name" not in st.session_state:
+    st.session_state.name = ""
+if "mobile" not in st.session_state:
+    st.session_state.mobile = ""
+if "show_password" not in st.session_state:
+    st.session_state.show_password = False
+
+# === Main App Layout ===
+st.title("💸 Personal Expense Tracker")
+st.markdown("Track your finances with style and precision")
+
+# === Authentication Section ===
+if not st.session_state.logged_in:
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("### 🔐 Authentication")
+        auth_mode = st.radio("Select Action", ["Login", "Sign Up"], horizontal=True)
+        
+        username = st.text_input("👤 Username", placeholder="Enter your username")
+        password = st.text_input("🔑 Password", type="password", placeholder="Enter your password")
+        
+        if auth_mode == "Sign Up":
+            name = st.text_input("📝 Full Name", placeholder="Enter your full name")
+            mobile = st.text_input("📱 Mobile Number", placeholder="Enter 10-digit mobile number")
+            confirm_password = st.text_input("🔑 Confirm Password", type="password", placeholder="Confirm your password")
+            
+            col_signup1, col_signup2 = st.columns(2)
+            
+            with col_signup1:
+                if st.button("Sign Up", use_container_width=True):
+                    # Validation
+                    if not all([username, password, name, mobile, confirm_password]):
+                        st.error("❌ Please fill all details.")
+                    elif password != confirm_password:
+                        st.error("❌ Passwords do not match.")
+                    else:
+                        # Validate password strength
+                        is_valid_pwd, pwd_msg = validate_password(password)
+                        if not is_valid_pwd:
+                            st.error(f"❌ {pwd_msg}")
+                        else:
+                            # Validate mobile number
+                            is_valid_mobile, mobile_msg = validate_mobile(mobile)
+                            if not is_valid_mobile:
+                                st.error(f"❌ {mobile_msg}")
+                            else:
+                                try:
+                                    df_users = load_user_data()
+                                    if username in df_users["Username"].values:
+                                        st.error("❌ Username already exists.")
+                                    else:
+                                        new_user = pd.DataFrame([{
+                                            "Username": username,
+                                            "PasswordHash": hash_password(password),
+                                            "Name": name,
+                                            "Mobile": mobile,
+                                            "CreatedDate": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                        }])
+                                        df_users = pd.concat([df_users, new_user], ignore_index=True)
+                                        df_users.to_csv("users.csv", index=False)
+                                        st.success("✅ Sign up successful! Please log in.")
+                                except Exception as e:
+                                    st.error(f"❌ Error creating account: {str(e)}")
+        
+        if auth_mode == "Login":
+            col_login1, col_login2 = st.columns(2)
+            
+            with col_login1:
+                if st.button("Login", use_container_width=True):
+                    if not username or not password:
+                        st.error("❌ Please enter both username and password.")
+                    else:
+                        try:
+                            df_users = load_user_data()
+                            user_row = df_users[df_users["Username"] == username]
+                            if not user_row.empty and check_password(password, user_row.iloc[0]["PasswordHash"]):
+                                st.session_state.logged_in = True
+                                st.session_state.username = username
+                                st.session_state.name = user_row.iloc[0]["Name"]
+                                st.session_state.mobile = user_row.iloc[0]["Mobile"]
+                                st.success("✅ Login successful!")
+                                st.rerun()
+                            else:
+                                st.error("❌ Invalid username or password.")
+                        except Exception as e:
+                            st.error(f"❌ Login error: {str(e)}")
+    
+    with col2:
+        st.markdown("### 📊 Features")
+        st.markdown("""
+        - 🔒 *Secure Authentication* with password hashing
+        - 💰 *Expense Tracking* across multiple categories
+        - 📈 *Interactive Charts* and visualizations
+        - 🎯 *Budget Targets* and alerts
+        - 📅 *Calendar View* of expenses
+        - 📱 *Mobile Responsive* design
+        - 📥 *Export Data* as CSV
+        - 🔍 *Advanced Filtering* and search
+        """)
+
+# === Main Application (After Login) ===
+else:
+    # Header with user info
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        st.markdown(f"### 👋 Welcome back, *{st.session_state.name}*!")
+        st.markdown(safe_mobile_display(st.session_state.mobile))
+    
+    with col3:
+        if st.button("🚪 Log Out", use_container_width=True):
+            for key in ["logged_in", "username", "name", "mobile"]:
+                st.session_state[key] = ""
+            st.session_state.logged_in = False
+            st.rerun()
+    
+    # Load user's expense data
+    df = load_expense_data(st.session_state.username)
+    CSV_FILE = get_expense_file(st.session_state.username)
+    
+    # Initialize expense file if doesn't exist
+    if not os.path.exists(CSV_FILE):
+        try:
+            df_init = pd.DataFrame(columns=[
+                "Name", "Date", "Salary", "EMI", "Food", "Bills", 
+                "Shopping", "Transportation", "Healthcare", "Entertainment", 
+                "Education", "Savings", "Mobile", "Category", "Notes"
+            ])
+            df_init.to_csv(CSV_FILE, index=False)
+        except Exception as e:
+            st.error(f"Error initializing expense file: {str(e)}")
+    
+    # Sidebar for inputs and targets
+    with st.sidebar:
+        st.header("💰 Add New Expense")
+        
+        # Manage Categories
+        with st.expander("🏷 Manage Categories"):
+            st.subheader("Add Custom Category")
+            new_category = st.text_input("Category Name", placeholder="e.g., Pet Care")
+            new_icon = st.text_input("Category Icon", placeholder="e.g., 🐕", max_chars=2)
+            
+            if st.button("➕ Add Category"):
+                if new_category and new_icon:
+                    user_categories = get_user_categories(st.session_state.username)
+                    user_categories[new_category] = new_icon
+                    if save_user_categories(st.session_state.username, user_categories):
+                        st.success(f"✅ Added category: {new_icon} {new_category}")
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to save category")
+                else:
+                    st.error("❌ Please enter both category name and icon")
+            
+            # Show existing custom categories
+            user_categories = get_user_categories(st.session_state.username)
+            if user_categories:
+                st.subheader("Your Custom Categories")
+                for cat, icon in user_categories.items():
+                    col1, col2 = st.columns([3, 1])
+                    col1.write(f"{icon} {cat}")
+                    if col2.button("🗑", key=f"del_{cat}"):
+                        del user_categories[cat]
+                        save_user_categories(st.session_state.username, user_categories)
+                        st.rerun()
+        
+        # Date input
+        entry_date = st.date_input("📅 Date", date.today())
+        
+        # Income
+        salary = st.number_input("💰 Monthly Salary", min_value=0, step=1000, 
+                                help="Enter your monthly salary/income")
+        
+        # Expense categories
+        all_categories = get_all_categories(st.session_state.username)
+        expense_values = {}
+        
+        st.subheader("💸 Expenses")
+        for category, icon in all_categories.items():
+            expense_values[category] = st.number_input(
+                f"{icon} {category}", 
+                min_value=0, 
+                step=100,
+                key=f"expense_{category}"
+            )
+        
+        # Additional fields
+        notes = st.text_area("📝 Notes", placeholder="Add any notes about this expense...")
+        
+        # Calculate totals
+        total_expense = sum(expense_values.values())
+        savings = salary - total_expense
+        
+        st.markdown("---")
+        st.markdown(f"*Total Expenses:* ₹{total_expense:,}")
+        st.markdown(f"*Savings:* ₹{savings:,}")
+        
+        # Budget targets
+        st.header("🎯 Monthly Targets")
+        target_budget = st.number_input("Total Budget Target", min_value=0, step=1000)
+        target_savings = st.number_input("Savings Target", min_value=0, step=1000)
+        
+        # Save button
+        if st.button("💾 Save Entry", use_container_width=True):
+            # Validation and warnings
+            warnings = []
+            if target_budget > 0 and total_expense > target_budget:
+                warnings.append(f"⚠ Total expense ₹{total_expense:,} exceeds budget target ₹{target_budget:,}")
+            if target_savings > 0 and savings < target_savings:
+                warnings.append(f"⚠ Savings ₹{savings:,} below target ₹{target_savings:,}")
+            
+            for warning in warnings:
+                st.warning(warning)
+            
+            try:
+                # Create new entry
+                new_entry_data = {
+                    "Name": st.session_state.name,
+                    "Date": entry_date.strftime('%Y-%m-%d'),
+                    "Salary": salary,
+                    "Savings": savings,
+                    "Mobile": st.session_state.mobile,
+                    "Category": "Mixed" if len([v for v in expense_values.values() if v > 0]) > 1 else 
+                              next((k for k, v in expense_values.items() if v > 0), "Uncategorized"),
+                    "Notes": notes
+                }
+                
+                # Add predefined expense categories in order
+                predefined_order = ["EMI", "Food", "Bills", "Shopping", "Transportation", 
+                                  "Healthcare", "Entertainment", "Education"]
+                for category in predefined_order:
+                    new_entry_data[category] = expense_values.get(category, 0)
+                
+                # Add custom categories after education
+                user_categories = get_user_categories(st.session_state.username)
+                for category in user_categories.keys():
+                    new_entry_data[category] = expense_values.get(category, 0)
+                
+                new_entry = pd.DataFrame([new_entry_data])
+                
+                # Load existing data and append
+                existing = load_expense_data(st.session_state.username)
+                updated = pd.concat([existing, new_entry], ignore_index=True)
+                updated.to_csv(CSV_FILE, index=False)
+                
+                st.success("✅ Entry saved successfully!")
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"❌ Error saving entry: {str(e)}")
+    
+    # Main content area
+    if not df.empty:
+        # Summary cards
+        st.markdown("### 📊 Financial Overview")
+        
+        # Get summaries
+        month_summary = create_expense_summary(df, "month")
+        year_summary = create_expense_summary(df, "year")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        if month_summary:
+            with col1:
+                st.metric(
+                    label="💰 This Month Income",
+                    value=f"₹{month_summary['total_income']:,}",
+                    delta=None
+                )
+            
+            with col2:
+                st.metric(
+                    label="💸 This Month Expenses", 
+                    value=f"₹{month_summary['total_expenses']:,}",
+                    delta=None
+                )
+            
+            with col3:
+                st.metric(
+                    label="💎 This Month Savings",
+                    value=f"₹{month_summary['total_savings']:,}",
+                    delta=None
+                )
+            
+            with col4:
+                savings_rate = (month_summary['total_savings'] / month_summary['total_income'] * 100) if month_summary['total_income'] > 0 else 0
+                st.metric(
+                    label="📈 Savings Rate",
+                    value=f"{savings_rate:.1f}%",
+                    delta=None
+                )
+        
+        # Tabs for different views
+        tab1, tab2, tab3, tab4 = st.tabs(["📈 Analytics", "📋 Data View", "📅 Calendar", "📥 Export"])
+        
+        with tab1:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if month_summary and month_summary['expense_breakdown']:
+                    st.subheader("🥧 This Month Expense Breakdown")
+                    
+                    # Create pie chart using plotly
+                    labels = list(month_summary['expense_breakdown'].keys())
+                    values = list(month_summary['expense_breakdown'].values())
+                    
+                    # Filter out zero values
+                    non_zero = [(l, v) for l, v in zip(labels, values) if v > 0]
+                    if non_zero:
+                        labels, values = zip(*non_zero)
+                        
+                        fig = px.pie(
+                            values=values, 
+                            names=labels,
+                            title="Monthly Expense Distribution"
+                        )
+                        fig.update_traces(textposition='inside', textinfo='percent+label')
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        
+            
+            with col2:
+                
+                # Bar chart for expense breakdown
+                st.subheader("📊 Monthly Expense Breakdown (Bar Chart)")
+
+            # Create bar chart using plotly
+                labels = list(month_summary['expense_breakdown'].keys())
+                values = list(month_summary['expense_breakdown'].values())
+
+            # Filter out zero values
+                non_zero = [(l, v) for l, v in zip(labels, values) if v > 0]
+                if non_zero:
+                    labels, values = zip(*non_zero)
+                    fig_bar = px.bar(
+                    x=labels,
+                    y=values,
+                    title="Monthly Expense Distribution - Bar Chart",
+                    labels={'x': 'Categories', 'y': 'Amount (₹)'},
+                    text=values
+            )
+                fig_bar.update_traces(texttemplate='₹%{text:,.0f}', textposition='outside')
+                fig_bar.update_layout(
+                    xaxis_title="Expense Categories",
+                    yaxis_title="Amount (₹)",
+                    showlegend=False
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+        
+        with tab2:
+            st.subheader("📋 Expense Records")
+            # st.dataframe(df_monthly.sort_values(by="Date", ascending=False))
+
+            # Filters
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                date_filter = st.selectbox("Filter by Period", 
+                                         ["All", "This Month", "Last Month", "This Year", "Custom Range"])
+            
+            # Apply filters
+            df_filtered = df.copy()
+            today = date.today()
+            
+            if date_filter == "This Month":
+                df_filtered = df_filtered[
+                    (df_filtered['Date'].dt.month == today.month) & 
+                    (df_filtered['Date'].dt.year == today.year)
+                ]
+            elif date_filter == "Last Month":
+                last_month = (today.replace(day=1) - timedelta(days=1))
+                df_filtered = df_filtered[
+                    (df_filtered['Date'].dt.month == last_month.month) & 
+                    (df_filtered['Date'].dt.year == last_month.year)
+                ]
+            elif date_filter == "This Year":
+                df_filtered = df_filtered[df_filtered['Date'].dt.year == today.year]
+            elif date_filter == "Custom Range":
+                with col2:
+                    start_date = st.date_input("Start Date", today - timedelta(days=30))
+                with col3:
+                    end_date = st.date_input("End Date", today)
+                df_filtered = df_filtered[
+                    (df_filtered['Date'].dt.date >= start_date) & 
+                    (df_filtered['Date'].dt.date <= end_date)
+                ]
+            
+            # Display filtered data
+            if not df_filtered.empty:
+                # Format the dataframe for display
+                display_df = df_filtered.copy()
+                display_df['Date'] = display_df['Date'].dt.strftime('%Y-%m-%d')
+                
+                st.dataframe(
+                    display_df.sort_values('Date', ascending=False),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Summary stats
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Records", len(df_filtered))
+                with col2:
+                    # Get all expense columns dynamically
+                    expense_cols = ["EMI", "Food", "Bills", "Shopping", "Transportation", 
+                                   "Healthcare", "Entertainment", "Education"]
+                    # Add custom categories
+                    custom_cols = [col for col in df_filtered.columns if col not in expense_cols + 
+                                   ["Name", "Date", "Salary", "Savings", "Mobile", "Category", "Notes"]]
+                    expense_cols.extend(custom_cols)
+                    available_expense_cols = [col for col in expense_cols if col in df_filtered.columns]
+                    
+                    total_exp = df_filtered[available_expense_cols].sum().sum()
+                    st.metric("Total Expenses", f"₹{total_exp:,}")
+                with col3:
+                    st.metric("Total Savings", f"₹{df_filtered['Savings'].sum():,}")
+            else:
+                st.info("No records found for the selected period.")
+        
+        with tab3:
+            st.subheader("🗓 Calendar View")
+            
+            # Month/Year selector
+            col1, col2 = st.columns(2)
+            with col1:
+                selected_year = st.selectbox("Year", range(2020, 2030), 
+                                           index=range(2020, 2030).index(today.year))
+            with col2:
+                selected_month = st.selectbox("Month", range(1, 13), 
+                                            index=today.month - 1,
+                                            format_func=lambda x: calendar.month_name[x])
+            
+            # Filter data for selected month
+            calendar_df = df[
+                (df['Date'].dt.month == selected_month) & 
+                (df['Date'].dt.year == selected_year)
+            ].copy()
+            
+            if not calendar_df.empty:
+                # Get all expense columns dynamically for calendar
+                expense_cols = ["EMI", "Food", "Bills", "Shopping", "Transportation", 
+                               "Healthcare", "Entertainment", "Education"]
+                # Add custom categories
+                custom_cols = [col for col in calendar_df.columns if col not in expense_cols + 
+                               ["Name", "Date", "Salary", "Savings", "Mobile", "Category", "Notes"]]
+                expense_cols.extend(custom_cols)
+                available_expense_cols = [col for col in expense_cols if col in calendar_df.columns]
+                
+                calendar_df['Total_Expense'] = calendar_df[available_expense_cols].sum(axis=1)
+                calendar_df['Day'] = calendar_df['Date'].dt.day
+                
+                st.markdown(f"{calendar.month_name[selected_month]} {selected_year}")
+                
+                # Create calendar grid
+                days_in_month = calendar.monthrange(selected_year, selected_month)[1]
+                first_day = calendar.monthrange(selected_year, selected_month)[0]
+                
+                # Calendar headers
+                col_headers = st.columns(7)
+                days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+                for i, day in enumerate(days):
+                    col_headers[i].markdown(f"{day}")
+                
+                # Calendar days
+                week = 0
+                day_columns = [st.columns(7) for _ in range(6)]  # Max 6 weeks
+                
+                # Fill in the days
+                current_day = 1
+                for week_num in range(6):
+                    if current_day > days_in_month:
+                        break
+                    
+                    for day_of_week in range(7):
+                        if week_num == 0 and day_of_week < first_day:
+                            # Empty cell for days before month starts
+                            day_columns[week_num][day_of_week].markdown("")
+                        elif current_day <= days_in_month:
+                            # Check if there's expense data for this day
+                            day_expense = calendar_df[calendar_df['Day'] == current_day]
+                            if not day_expense.empty:
+                                expense_amount = day_expense['Total_Expense'].iloc[0]
+                                day_columns[week_num][day_of_week].markdown(
+                                    f"{current_day}\n₹{expense_amount:.0f}",
+                                    help=f"Total expense: ₹{expense_amount:,.0f}"
+                                )
+                            else:
+                                day_columns[week_num][day_of_week].markdown(f"{current_day}")
+                            current_day += 1
+            else:
+                st.info(f"No expense data found for {calendar.month_name[selected_month]} {selected_year}")
+        
+        with tab4:
+            st.subheader("📥 Export Options")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("💾 Download Data**")
+                
+                # CSV download
+                csv_data = df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📋 Download as CSV",
+                    data=csv_data,
+                    file_name=f"expenses_{st.session_state.username}_{date.today()}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+                
+                # Summary report
+                if month_summary:
+                    summary_text = f"""
+Personal Expense Report
+Generated on: {date.today()}
+User: {st.session_state.name}
+
+=== MONTHLY SUMMARY ({month_summary['period']}) ===
+Total Income: ₹{month_summary['total_income']:,}
+Total Expenses: ₹{month_summary['total_expenses']:,}
+Total Savings: ₹{month_summary['total_savings']:,}
+Savings Rate: {(month_summary['total_savings']/month_summary['total_income']*100):.1f}%
+
+=== EXPENSE BREAKDOWN ===
+"""
+                    for category, amount in month_summary['expense_breakdown'].items():
+                        if amount > 0:
+                            summary_text += f"{category}: ₹{amount:,}\n"
+                    
+                    st.download_button(
+                        label="📄 Download Summary Report",
+                        data=summary_text.encode('utf-8'),
+                        file_name=f"expense_summary_{st.session_state.username}_{date.today()}.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+            
+            with col2:
+                st.markdown("📊 Export Charts**")
+                
+                if month_summary and month_summary['expense_breakdown']:
+                    # Create matplotlib chart for download
+                    labels = [k for k, v in month_summary['expense_breakdown'].items() if v > 0]
+                    values = [v for v in month_summary['expense_breakdown'].values() if v > 0]
+                    
+                    if labels and values:
+                        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+                        
+                        # Pie chart
+                        ax1.pie(values, labels=labels, autopct='%1.1f%%', startangle=90)
+                        ax1.set_title('Expense Distribution')
+                        
+                        # Bar chart
+                        ax2.bar(labels, values)
+                        ax2.set_title('Expense Breakdown')
+                        ax2.set_ylabel('Amount (₹)')
+                        plt.xticks(rotation=45)
+                        
+                        plt.tight_layout()
+                        
+                        chart_bytes = fig_to_bytes(fig)
+                        st.download_button(
+                            label="📊 Download Charts (PNG)",
+                            data=chart_bytes,
+                            file_name=f"expense_charts_{st.session_state.username}_{date.today()}.png",
+                            mime="image/png",
+                            use_container_width=True
+                        )
+                        plt.close(fig)
+    
+    else:
+        st.info("🚀 No expense data yet. Start by adding your first expense using the sidebar!")
+        
+        # Quick start guide
+        with st.expander("📖 Quick Start Guide"):
+            st.markdown("""
+            ### Getting Started with Your Expense Tracker
+            
+            1. *💰 Add Your Salary*: Enter your monthly income in the sidebar
+            2. *💸 Record Expenses*: Fill in your daily expenses across categories
+            3. *🎯 Set Targets*: Define monthly budget goals to stay on track
+            4. *📊 View Analytics*: Check your spending patterns and trends
+            5. *📥 Export Data*: Download your financial data anytime
+            
+            *Tips for Better Tracking:*
+            - Update expenses daily for accuracy
+            - Use the notes field to remember what you spent on
+            - Set realistic budget targets
+            - Review your monthly summary regularly
+            """)
+
+# === Footer ===
+st.markdown("---")
+st.markdown("💸 Personal Expense Tracker - Keep your finances in check!")
