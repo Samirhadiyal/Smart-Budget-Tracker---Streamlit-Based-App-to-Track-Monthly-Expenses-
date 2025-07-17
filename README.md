@@ -1,5 +1,5 @@
-# 💸 Personal Expense Tracker
 # This project is open source and available under the MIT License.
+# 💸 Personal Expense Tracker
 
 A powerful and user-friendly **Personal Expense Tracker** web app built with **Streamlit**, enabling users to track their income, expenses, savings, and visualize their financial habits with interactive charts, custom categories, and export options.
 
@@ -31,3 +31,18 @@ A powerful and user-friendly **Personal Expense Tracker** web app built with **S
 
 ---
 
+## 📋Requirements
+
+- **Python 3.7 or higher**
+- **streamlit**
+- **pandas**
+- **plotly**
+- **matplotlib**
+
+
+---
+
+## How to Run
+
+1. Make sure you're inside the project directory.
+2. Run the following command in your terminal: **streamlit run app.py**
